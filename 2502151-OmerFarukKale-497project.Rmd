@@ -1,0 +1,784 @@
+---
+title: "2502151-OmerFarukKale-497Project"
+author: "Ömer Faruk Kale"
+date: "2024-12-27"
+output: html_document
+---
+
+1- Firstly I should explain my data. My data is about exchange rate in Japan to USD dollar. I'm trying to understand what can we do? Our data is stationary? What will be happen in future? Kind of question that I'm trying to solve and explain.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Here data is defined as jpn, we are trying to look our data classes and then,we are converting data to time series object to make easier coding.
+```{r}
+getwd()
+jpn <- read.csv("EXJPUS.csv")
+class(jpn)
+str(jpn)
+summary(jpn)
+
+sum(is.na(jpn))
+#there is no missing values in the dataset.
+frequency(jpn)
+#so we have annual(yearly) dataset.
+
+jpn$DATE <- as.Date(jpn$DATE,format = "%Y-%m-%d") #when we define as a date there is no errors anymore
+jpn$EXJPUS <- as.numeric(jpn$EXJPUS) #Trying to convert numeric values
+ts_jpn <- ts(jpn$EXJPUS, start = c(1971, 1), frequency = 12) 
+#we converted into the time series object
+summary(ts_jpn)
+```
+
+
+2- Let's check the data in a visual way, so that we can visually determine the existence of a trend, seasonality,and outliers. 
+```{r}
+library(ggplot2)
+library(forecast)
+autoplot(ts_jpn, main = "Time Series Plot of Japan Yen exchange rate to USD Dollar") + theme_bw()
+```
+
+In a visual way we can say that there is decreasing trend, it is hard to say but there might be seasonality we should conduct tests to understand whether there is seasonality or not. Moreover, we can say that there is no stationarity because mean is not constant and there is trend.
+
+```{r}
+boxplot(ts_jpn~cycle(ts_jpn),xlab="month",ylab="Japan Yen to USD rate")
+```
+
+When we look to the boxplot we can say say that there is no seasonality because there is no different value in the boxplot.
+
+3- Let's split data as train and test 
+```{r}
+test_size <- 12
+
+train_data <- head(ts_jpn, -test_size)
+test_data <- tail(ts_jpn,test_size)
+
+
+length(train_data)
+length(test_data)
+```
+
+
+4- Anomaly Detection
+
+```{r}
+library(tibbletime)
+library(tidyverse)
+library(timetk)
+library(anomalize)
+library(dplyr)
+library(forecast)
+jpn$DATE <- as.Date(jpn$DATE, format = "%Y-%m-%d")
+jpn_tt <- as_tbl_time(jpn, index = DATE)
+
+jpn_tt %>% anomalize::time_decompose(EXJPUS, method = "stl", frequency = "auto", trend = "auto") %>% anomalize::anomalize(remainder, method = "gesd", alpha = 0.05, max_anoms = 0.2) %>% anomalize::plot_anomaly_decomposition()
+
+traindata_clean<-tsclean(train_data)
+
+#visualizing the check whether there are anomalies or not 
+#in my graph there is anomalies so we should extract these anomalies.
+```
+
+As we can see from the visualizations there is anomalies we should try to reduce number of anomlies.
+
+
+```{r}
+jpn_tt %>% 
+  anomalize::time_decompose(EXJPUS) %>%
+  anomalize::anomalize(remainder) %>%
+  anomalize::time_recompose() %>%
+  anomalize::plot_anomalies(time_recomposed = TRUE, ncol = 3, alpha_dots = 0.5)
+
+```
+
+
+
+```{r}
+ms_clean=tsclean(jpn$EXJPUS)
+plot(ms_clean, main="Exchange Rate")
+lines(jpn$EXJPUS, col='blue') #original dataset.
+grid()
+
+
+```
+
+
+We use tsclean function to clean anomalies from our data.
+
+5- BoxCox transformation
+```{r}
+library(MASS)
+lambda <- BoxCox.lambda(traindata_clean)
+lambda
+
+jpn_bc <- BoxCox(traindata_clean,lambda)
+
+autoplot(jpn_bc)
+
+
+```
+
+To make variance more stable we did a BoxCox transformation. Since lambda is not high we don't need to do BoxCox.
+
+6- ACF and PACF plotting and then testing
+
+```{r}
+library(gridExtra)
+p1<-ggAcf(traindata_clean,lag.max = 48)+theme_bw()
+p2<-ggPacf(traindata_clean, lag.max = 48)+theme_bw()
+grid.arrange(p1,p2,nrow=1)
+```
+Since in ACF plot there is slow linear decay we can say that our model is not stationary. We should conduct tests also to be sure.
+
+```{r}
+library(tseries)
+kpss.test(traindata_clean,null="Level")
+
+```
+According to this result we should reject h0 accept h1 and that means model is not stationary.
+
+```{r}
+kpss.test(traindata_clean,null="Trend")
+
+```
+We should also reject h0,and accept h1 so that means there is stochastic trend.
+
+Let's apply adf test to check whether there is unit root or not
+```{r}
+library(fUnitRoots)
+
+adfTest(traindata_clean,lags = 2,type = "c")
+
+```
+Our p value is bigger than 0.05 so fail to reject h0 that means there is unit root. We should take difference
+
+```{r}
+adfTest(traindata_clean,lags = 2,type = "ct")
+```
+Our p value is bigger than 0.05 so fail to reject h0 that means there is stochastic trend. 
+
+let's apply HEGY test to be check whether there is seasonal unit root or not.
+```{r}
+library(pdR)
+test_hegy <- HEGY.test(wts=traindata_clean, itsd=c(1,1,0), regvar=0, selectlags=list(mode="signf", Pmax=NULL))
+test_hegy$stats
+
+```
+As we can see from the result we can say that there is only one unit root and it is normal unit root. Since p value of Fpi_11;12 is smaller than 0.05, reject h0 which means that there is no seasonal unit root. But for tpi_1 part, it is bigger than 0.05 so fail to reject h0 which means there is normal unit root.
+
+
+7-Taking difference and making tests
+```{r}
+diff_jpn_bc <- diff(traindata_clean)
+kpss.test(diff_jpn_bc,null = c("Level"))
+```
+Since our p value is greater than 0.05 fail to reject h0 which means after differencing our model is now stationary. That's why we don't need to look trend.
+
+to be sure and check whether there is still unit root or not let's look adftest
+```{r}
+adfTest(diff_jpn_bc,lags = 2,type = "c")
+
+
+```
+Since p value is smaller than 0.05 we are rejecting h0 so there is no unit root anymore.
+
+one differencing is enough but let's check hegy test to be certain.
+```{r}
+diffTestHegy<- HEGY.test(wts=diff_jpn_bc, itsd=c(1,1,0), regvar=0, selectlags=list(mode="signf", Pmax=NULL))
+
+diffTestHegy$stats
+
+library(uroot)
+ch.test(jpn_bc,type = "dummy",sid=c(1:12))
+```
+As you can see all of the values are smaller than 0.05 so reject h0 which means there is no seasonal and normal unit root. That's why we don't need to check trend anymore. Also there is no seasonality according to the Canova and Hansen test because 0.0507 > 0.05.
+
+8-
+```{r}
+pp1<-ggAcf(diff_jpn_bc,lag.max = 48)+theme_bw()
+pp2<-ggPacf(diff_jpn_bc,lag.max = 48)+theme_bw()
+grid.arrange(pp1,pp2,nrow=1)
+
+
+```
+When we look to the ACF and PACF plots there is sinusodial behaviour in ACF and PACF plot.
+It may be okay to use ARIMA(1,1,1) or ARIMA(1,1,0) according to the plots.But there might be slight seasonality.
+
+```{r}
+library(TSA)
+eacf(diff_jpn_bc,ar.max = 24,ma.max = 24)
+```
+It is hard to choose a model from here because it is not quite okay for our model.
+
+
+
+
+9- I think the best model is ARIMA(11,1,0) by looking to the ACF and PACF plots.
+
+
+10-
+```{r}
+library(forecast)
+auto.arima(jpn_bc)
+
+```
+Auto ARIMA also suggest ARIMA(1,1,0) it is better to use ARIMA(1,1,0), but to be sure we can look to the other models.
+
+ARIMA(1,1,2)
+ARIMA(1,1,1)
+ARIMA(1,1,0)
+ARIMA(1,1,6)
+ARIMA(11,1,0)
+ARIMA(11,1,1)
+ARIMA(11,1,6)
+ARIMA(11,1,2)
+ARIMA(8,1,1)
+ARIMA(1,1,0)(0,0,1)[12]
+```{r}
+fit1<-Arima(traindata_clean,order = c(1, 1, 2))
+fit1
+fit2<-Arima(traindata_clean,order = c(1, 1, 1))
+fit2 
+fit3<-Arima(traindata_clean,order = c(1, 1, 0))
+fit3 # 
+fit4<-Arima(traindata_clean,order = c(1, 1, 6))
+fit4 
+fit5<-Arima(traindata_clean,order = c(11, 1, 0))
+fit5 #
+fit6<-Arima(traindata_clean,order = c(11, 1, 1))
+fit6 
+fit7<-Arima(traindata_clean,order = c(11, 1, 6))
+fit7 
+fit8<-Arima(traindata_clean,order = c(11, 1,2))
+fit8 #
+#fit9<- Arima(traindata_clean,order = c(37, 1,1))
+#fit9
+#fit10<- Arima(traindata_clean,order = c(37, 1,12))
+#fit10
+fit11 <- Arima(traindata_clean,order = c(1, 1,12))
+fit11 #
+fit12 <- Arima(traindata_clean,order = c(1, 1,11))
+fit12
+#fit13 <- Arima(traindata_clean,order = c(1, 1,37))
+#fit13
+#fit14 <-Arima(traindata_clean,order = c(1, 1,38))
+#fit14
+#fit15<- Arima(traindata_clean,order = c(1, 1,39))
+#fit15
+fit16 <- Arima(traindata_clean,order = c(1,1,0), seasonal = c(1,0,0))
+fit16
+fit17 <- Arima(traindata_clean,order = c(1,1,0), seasonal = c(1,0,1))
+fit17 #
+fit18 <- Arima(traindata_clean,order = c(1,1,0), seasonal = c(0,0,1))
+fit18 #
+#fit11<- Arima(jpn_bc,order = c(37, 1,6))
+#fit11
+#I tried to look 37,1,37 but my computer couldn't do it :(
+
+fit19 <- Arima(traindata_clean,order = c(1,1,0), seasonal = c(3,0,3))
+fit19
+fit20 <- Arima(traindata_clean,order = c(1,1,1), seasonal = c(1,0,1))
+fit20 #
+fit21 <- Arima(traindata_clean,order = c(1,1,6), seasonal = c(1,0,1))
+fit21
+fit22 <- Arima(traindata_clean,order = c(1,1,2), seasonal = c(1,0,1))
+fit22#
+fit23 <- Arima(traindata_clean,order = c(3,1,1), seasonal = c(1,0,1))
+fit23
+fit24 <- Arima(traindata_clean,order = c(3,1,1), seasonal = c(1,0,2))
+fit24
+fit25 <- Arima(traindata_clean,order = c(3,1,1), seasonal = c(0,0,1))
+fit25
+fit26 <- Arima(traindata_clean,order = c(3,1,0), seasonal = c(0,0,1))
+fit26 #
+fit27<-Arima(traindata_clean,order = c(3, 1, 1))
+fit27
+fit28<-Arima(traindata_clean,order = c(3, 1, 0))
+fit28
+fit29 <- Arima(traindata_clean,order = c(3,1,0), seasonal = c(3,0,1))
+fit29
+fit30 <- Arima(traindata_clean,order = c(0,1,1))
+fit30
+```
+When we look to the results actually fit3,fit5,fit8,fit9,fit12,fit13,fit11,fit16 and fit17 is good values but when we look to the AIC and BIC values fit5 seems best one.
+
+11-
+```{r}
+checkresiduals(diff_jpn_bc)
+```
+Here there are residuals of differenced version.
+
+```{r}
+r=resid(fit5)
+autoplot(r)+geom_line(y=0)+theme_minimal()+ggtitle("Plot of The Residuals")
+ggplot(r, aes(sample = r)) +stat_qq()+geom_qq_line()+ggtitle("QQ Plot of the Residuals")+theme_minimal()
+```
+When we look to the QQplot we can say that Result of QQplot is shows that the residuals of the model seems to have light tailed distribution.(indicates S shape slightly.)
+
+```{r}
+ggplot(r,aes(x=r))+geom_histogram(bins=20)+geom_density()+ggtitle("Histogram of Residuals")+theme_minimal()
+```
+
+Histogram of the resiudals shows that the series might be normally distributed residuals.
+
+```{r}
+
+ggplot(r,aes(y=r,x=as.factor(1)))+geom_boxplot()+ggtitle("Box Plot of Residuals")+theme_minimal()
+```
+
+Box Plot seems symmetric shape so we might say that it's residuals are normally distributed but we should check.
+
+```{r}
+library(tseries)
+jarque.bera.test(r)
+shapiro.test(r)
+```
+Since p value is less than alpha for both, we should reject Ho. Therefore,it can be said that we have no enough evidence to claim that we have residuals with normal distribution.
+
+
+
+```{r}
+ggAcf(as.vector(r),main="ACF of the Residuals",lag = 48)+theme_minimal() #to see time lags, as. factor function is used.
+```
+
+When we look to the residuals ACF most of them in the white noise band so the residuals are might be uncorrelated. To be sure we should make tests.
+
+```{r}
+library(TSA)
+m = lm(r ~ 1+zlag(r))
+
+library(lmtest)
+bgtest(m,order=24)
+
+```
+p value is smaller than 0.05, we have 95% confident that the residuals of the model are unccorrelated, according to results of Breusch-Godfrey Test. But, to be sure we should make much more tests.
+
+
+```{r}
+
+Box.test(r,lag=24,type = c("Box-Pierce"))
+Box.test(r,lag=24,type = c("Ljung-Box"))
+
+```
+Since p value is smaller than 0.05, we have 95% confident that the residuals of the model are uncorrelated, according to results of Box-Ljung and Box-Pierce Tests.
+
+
+```{r}
+#Detecting Heteroscedasticity
+rr=r^2
+g1<-ggAcf(as.vector(rr), lag.max = 48)+theme_minimal()+ggtitle("ACF of Squared Residuals")
+g2<-ggPacf(as.vector(rr), lag.max = 48)+theme_minimal()+ggtitle("PACF of Squared Residuals")
+grid.arrange(g1,g2,ncol=2)
+
+
+```
+
+There are some significant spikes so that it might be heteroscedastic to be sure let's do some tests.
+
+
+```{r}
+
+library(lmtest)
+m = lm(r ~ jpn_bc+zlag(jpn_bc)+zlag(jpn_bc,2))
+bptest(m)
+```
+Since p value is smaller than 0.05, We reject Ho. Therefore, we can say that we have enough evidence to claim that there is heteroscedasticity, according to results of Breusch-Pagan test.
+
+
+Also let's check ARCH Engle's Test to check heteroscedasticity.
+```{r}
+library(MTS)
+library(FinTS)
+ArchTest(rr)
+archTest(r)
+```
+Since p values is smaller than 0.05 , we  reject H0. Therefore, we can conclude that there is  presence of ARCH effects.
+
+
+
+
+```{r}
+library(rugarch)
+spec=ugarchspec(variance.model = list(model="sGARCH",garchOrder = c(1, 1))) 
+def.fit1= ugarchfit(spec = spec, data = traindata_clean)
+print(def.fit1)
+
+spec=ugarchspec(variance.model = list(model="sGARCH",garchOrder = c(2, 1))) 
+def.fit2= ugarchfit(spec = spec, data = traindata_clean)
+print(def.fit2)
+
+
+spec=ugarchspec(variance.model = list(model="sGARCH",garchOrder = c(2, 2))) 
+def.fit3= ugarchfit(spec = spec, data = traindata_clean)
+print(def.fit3)
+
+
+spec=ugarchspec(variance.model = list(model="apARCH")) 
+def.fit4= ugarchfit(spec = spec, data = traindata_clean)
+print(def.fit4)
+
+
+```
+
+When we look to the AIC, BIC, and simplicity values, the apARCH model is the best option. It accurately captures the dynamics without overfitting, as evidenced in the diagnostic tests.
+
+
+```{r}
+plot(def.fit4,which=3)
+```
+
+```{r}
+f<-ugarchforecast(def.fit4,n.ahead = 12)
+f@forecast
+```
+
+```{r}
+f@forecast$seriesFor
+```
+
+```{r}
+s<-as.vector(f@forecast$seriesFor)
+bootp=ugarchboot(def.fit4,method=c("Partial","Full")[1],n.ahead = 12,n.bootpred=1000,n.bootfit=1000)
+bootp
+```
+
+```{r}
+plot(bootp,which=2)
+```
+
+Now, lets compare the performance of apARCH model with SARIMA model.
+
+```{r}
+s_f=bootp@forc@forecast$seriesFor #this is for series forecasts
+s_f
+```
+
+```{r}
+s_f1=as.vector(s_f) #for comparison, we make the forecasts as vector.
+
+v_f=bootp@forc@forecast$sigmaFor#this is for variance forecasts
+v_f
+```
+
+
+```{r}
+f1<-forecast(fit5,h=12)
+f1
+
+```
+
+
+
+```{r}
+accuracy(f1,test_data) 
+accuracy(s_f1,test_data)
+accuracy(s,test_data)
+
+
+```
+
+As you see, the forecast values obtained from apARCH model outperforms our SARIMA.
+
+
+12-
+Part-A
+
+
+
+
+Part-B
+
+
+```{r}
+library(forecast)
+qcement.ets <- ets(train_data, model = "ZZZ")
+summary(qcement.ets)
+```
+
+
+
+
+```{r}
+qcement.f1 <- forecast(qcement.ets, h = 13)
+autoplot(qcement.f1)
+
+autoplot(qcement.f1$mean, series = "ETS")+autolayer(test_data,series="actual")+theme_bw()
+```
+
+When we look to the plot we can say that our forecast with model "ZZZ" is seems great.
+
+```{r}
+accuracy(qcement.f1,test_data)
+```
+
+
+PART-C nnetar
+```{r}
+nnmodel<-nnetar(traindata_clean)
+nnmodel
+autoplot(traindata_clean)+autolayer(fitted(nnmodel))+theme_minimal()+ggtitle("Fitted Values of NN Model")
+```
+
+
+```{r}
+nnforecast<-forecast(nnmodel,h=12,PI=TRUE)
+nnforecast
+autoplot(nnforecast)+theme_minimal()
+```
+
+
+
+
+```{r}
+accuracy(nnforecast,test_data)
+autoplot(nnforecast$mean, series = "NNForecast")+autolayer(test_data,series="actual")+theme_bw()
+```
+
+
+PART-D TBATS
+
+```{r}
+tbatsmodel<-tbats(train_data)
+tbatsmodel
+
+
+```
+
+```{r}
+autoplot(traindata_clean,main="TS plot of Train with TBATS Fitted") +autolayer(fitted(tbatsmodel), series="Fitted") +theme_minimal()
+```
+
+The model fitted values almost matchs with the true values of the series as shown in the figure.
+
+```{r}
+tbats_forecast<-forecast(tbatsmodel,h=12)
+tbats_forecast
+autoplot(tbats_forecast)+theme_minimal()
+```
+
+we produced the 12 steps ahead forecast using forecast() function.
+The forecast plot shows that the prediction intervals appear to be not much too wide , it’s a bit narrow , This may indicate that the forecasts are accurate.
+
+```{r}
+autoplot(tbats_forecast)+autolayer(test_data,series="actual",color="red")+theme_minimal()
+```
+
+It is not accurate when we look to the red and blue line. So it is not accurate but let's check accuracy.
+
+
+```{r}
+accuracy(tbats_forecast,test_data)
+autoplot(tbats_forecast$mean, series = "TBATS")+autolayer(test_data,series="actual")+theme_bw()
+
+```
+
+
+Part-E
+
+```{r}
+library(prophet)
+ds<-c(seq(as.Date("1971/01/01"),as.Date("2023/11/01"),by="month"))
+df<-data.frame(ds,y=as.numeric(train_data))
+head(df)
+```
+
+```{r}
+jpn_prophet <- prophet(df)
+future<-make_future_dataframe(jpn_prophet,periods = 12) 
+tail(future)
+dim(df)
+dim(future)
+#
+```
+
+
+
+```{r}
+forecast <- predict(jpn_prophet, future)
+tail(forecast[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')],12)
+
+```
+
+```{r}
+library(ggplot2)
+plot(jpn_prophet, forecast)+theme_minimal() #to see plot
+
+```
+
+Above graph shows the forecasted values of the data where, Black dots refers to the original data, Dark blue line refers to the predicted value(yhat), and Light blue area indicates the yhat_upper and yhat_lower value.
+
+```{r}
+prophet_plot_components(jpn_prophet, forecast)
+
+```
+
+
+```{r}
+dyplot.prophet(jpn_prophet, forecast)
+
+
+```
+
+We can use check the predicted vs real values and I think is not that great.
+
+D-
+We can say that ETS outperforms prophet.
+
+
+
+```{r}
+jpn_prophet_new <- prophet(df,changepoint.range=0.5,changepoint.prior.scale=0.2,seasonality.prior.scale=0.7)
+future_new=make_future_dataframe(jpn_prophet_new,periods = 12, freq = "month")
+forecast_new <- predict(jpn_prophet_new, future_new)
+accuracy(tail(forecast_new$yhat,12),test_data)
+
+```
+
+
+```{r}
+library(prophet)
+library(forecast)
+
+changepoint_prior <- c(0.1, 0.5, 0.9)
+seasonality_prior <- c(0.1, 0.3, 0.5)
+changepoint_range <- c(0.6, 0.8, 0.9)
+
+results <- data.frame(
+  changepoint_prior = numeric(),
+  seasonality_prior = numeric(),
+  changepoint_range = numeric(),
+  RMSE = numeric()
+)
+
+for (cp in changepoint_prior) {
+  for (sp in seasonality_prior) {
+    for (cr in changepoint_range) {
+      m <- prophet(
+        changepoint.prior.scale = cp,
+        seasonality.prior.scale = sp,
+        changepoint.range = cr
+      )
+      m <- fit.prophet(m, df) 
+      
+
+      future <- make_future_dataframe(m, periods = 12, freq = "month")
+      forecast <- predict(m, future)
+      
+      predicted <- tail(forecast$yhat, 12)
+      acc <- accuracy(predicted, test_data)  
+      rmse <- acc["Test set", "RMSE"]  # Extract RMSE from accuracy
+      
+      results <- rbind(results, data.frame(
+        changepoint_prior = cp, 
+        seasonality_prior = sp, 
+        changepoint_range = cr, 
+        RMSE = rmse
+      ))
+    }
+  }
+}
+
+#best parameters
+best_params <- results[which.min(results$RMSE), ]
+best_params
+```
+
+```{r}
+jpn_prophet_new2 <- prophet(df,changepoint.range=0.9,changepoint.prior.scale=0.1,seasonality.prior.scale=0.1)
+future_new2=make_future_dataframe(jpn_prophet_new2,periods = 12, freq = "month")
+forecast_new2 <- predict(jpn_prophet_new2, future_new2)
+accuracy(tail(forecast_new2$yhat,12),test_data)
+
+```
+
+We obtained the smaller RMSE value compared to the original prophet model.
+
+
+
+13-
+
+
+```{r}
+f1 <- forecast::forecast(fit5, h=12)
+#f11<-InvBoxCox(f1$mean,lambda) #Back Transformation
+#summary(f1)
+#accuracy(f11,test_data)
+accuracy(f1,test_data)
+
+autoplot(f1,main=c("Time Series Plot of Actual Values and SARIMA Forecast"), series="forecast" ) + autolayer(test_data,series = "actual")
+```
+
+
+
+14-
+
+```{r}
+accuracy(f1,test_data)
+accuracy(tail(forecast_new2$yhat,12),test_data)
+accuracy(s_f1,test_data)
+accuracy(s,test_data)
+accuracy(qcement.f1,test_data)
+accuracy(nnforecast,test_data)
+accuracy(tbats_forecast,test_data)
+```
+
+Our Sarima model is better than others.
+
+15-
+
+```{r}
+
+boot_2 <- ugarchboot(def.fit4,method=c("Partial","Full")[1],n.ahead = 12,n.bootpred=1000,n.bootfit=1000)
+
+f_2 <- boot_2@forc@forecast$seriesFor
+f_vec_2 <- as.vector(f_2)
+
+boot_1 <- ugarchboot(def.fit1,method=c("Partial","Full")[1],n.ahead = 12,n.bootpred=1000,n.bootfit=1000)
+
+f_1 <- boot_1@forc@forecast$seriesFor
+f_vec_1 <- as.vector(f_1)
+
+boot <- ugarchboot(def.fit2,method=c("Partial","Full")[1],n.ahead = 12,n.bootpred=1000,n.bootfit=1000)
+
+f_3 <- boot@forc@forecast$seriesFor
+f_vec_3 <- as.vector(f_3)
+
+boot_3 <- ugarchboot(def.fit3,method=c("Partial","Full")[1],n.ahead = 12,n.bootpred=1000,n.bootfit=1000)
+
+f_4 <- boot_3@forc@forecast$seriesFor
+f_vec_4 <- as.vector(f_4)
+
+ts_garch <- ts(f_1, frequency = 12, start = c(2023, 12))
+ts_garch_1 <- ts(f_3, frequency = 12, start = c(2023,12))
+ts_garch_2 <- ts(f_4, frequency = 12, start = c(2023,12))
+ts_aparch <- ts(f_2, frequency = 12, start = c(2023,12))
+
+
+autoplot(f1$mean, series = "ARIMA(11,1,0)", main = "Comparison of Forecast Values") + 
+  autolayer(test_data, series = "actual") + 
+  autolayer(tbats_forecast$mean, series = "TBATS") +
+  autolayer(nnforecast$mean, series = "nnforecast") +
+   autolayer(qcement.f1$mean, series = "ETS")+autolayer(ts_aparch, series = "ARFIMA(1,0,1)+apARCH(1,1)")+autolayer(ts_garch, series = "ARFIMA(1,0,1)+sGARCH(1,1)")+autolayer(ts_garch_1, series = "ARFIMA(1,0,1)+sGARCH(2,1)")+autolayer(ts_garch_2, series = "ARFIMA(1,0,1)+sGARCH(2,2)")+theme_bw()
+
+```
+
+```{r}
+autoplot(f1, series = "ARIMA(11,1,0)", main = "Comparison of Forecast Values") + 
+  autolayer(test_data, series = "actual") + 
+    autolayer(tbats_forecast$mean, series = "TBATS") +
+  autolayer(nnforecast$mean, series = "nnforecast") +
+   autolayer(qcement.f1$mean, series = "ETS")+autolayer(ts_aparch, series = "ARFIMA(1,0,1)+apARCH(1,1)")+autolayer(ts_garch, series = "ARFIMA(1,0,1)+sGARCH(1,1)")+autolayer(ts_garch_1, series = "ARFIMA(1,0,1)+sGARCH(2,1)")+autolayer(ts_garch_2, series = "ARFIMA(1,0,1)+sGARCH(2,2)")+theme_bw()+coord_cartesian(xlim = c(2020, 2025)) +  
+  geom_vline(xintercept = 2023,            
+             linetype = "dashed",
+             color = "red")+theme(panel.grid.minor = element_blank()) +  
+  labs(x = "Time", y = "Value") +             
+  scale_x_continuous(breaks = seq(2020, 2025, by = 1))  
+```
+
+
+
+
+
+
+
